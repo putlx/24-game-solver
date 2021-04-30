@@ -7,71 +7,59 @@
 #include <variant>
 #include <vector>
 
-struct oprn_set;
+using id_type = std::variant<struct operation_set, double>;
 
-using id_type = std::variant<oprn_set, double>;
-
-struct oprn {
+struct operation {
     std::shared_ptr<id_type> operand;
     bool com;
     std::size_t cnt;
 };
 
-bool operator==(const oprn &, const oprn &);
+bool operator==(const operation &, const operation &);
 
-struct oprn_set {
+struct operation_set {
     bool prioritized;
-    std::list<std::shared_ptr<oprn>> set;
+    std::list<operation> set;
 
-    void insert(const std::shared_ptr<id_type> &a, bool com) {
-        insert(std::shared_ptr<oprn>(new oprn{a, com, 1}));
+    void update(const operation_set &r, bool rvs) {
+        for (const auto &a : r.set)
+            insert(operation{a.operand, a.com != rvs, 1});
     }
 
-    void update(const oprn_set &other, bool rvs) {
-        for (const auto &m : other.set) {
-            std::shared_ptr<oprn> a(new oprn(*m));
-            if (rvs)
-                a->com = !a->com;
-            insert(std::move(a));
-        }
-    }
-
-  private:
-    void insert(const std::shared_ptr<oprn> &a) {
-        for (auto &m : set)
-            if (*m == *a) {
-                ++m->cnt;
+    void insert(const operation &i) {
+        for (auto &a : set) {
+            if (a == i) {
+                a.cnt += i.cnt;
                 return;
             }
-        set.push_front(a);
+        }
+        set.push_front(i);
     }
 };
 
-std::ostream &operator<<(std::ostream &out, const id_type &a) {
-    if (std::get_if<double>(&a)) {
-        if (std::get<double>(a) < 0)
-            return out << '(' << std::get<double>(a) << ')';
-        return out << std::get<double>(a);
+std::ostream &operator<<(std::ostream &out, const id_type &i) {
+    if (std::holds_alternative<double>(i)) {
+        auto v = std::get<double>(i);
+        if (v < 0)
+            return out << '(' << v << ')';
+        return out << v;
     }
-    const auto &m = std::get<oprn_set>(a);
-    out << '(' << (m.prioritized ? '1' : '0');
-    for (const auto &n : m.set)
-        for (std::size_t i = 0; i < n->cnt; ++i)
-            out << (m.prioritized ? (n->com ? '*' : '/') : (n->com ? '+' : '-')) << *n->operand;
+    const auto &s = std::get<operation_set>(i);
+    out << '(' << s.prioritized;
+    for (const auto &a : s.set)
+        for (std::size_t i = 0; i < a.cnt; ++i)
+            out << (s.prioritized ? (a.com ? '*' : '/') : (a.com ? '+' : '-')) << *a.operand;
     return out << ')';
 }
 
-bool operator==(const oprn_set &lhs, const oprn_set &rhs) {
-    if (lhs.prioritized != rhs.prioritized)
-        return false;
-    else if (lhs.set.size() != rhs.set.size())
-        return false;
-    return std::all_of(lhs.set.cbegin(), lhs.set.cend(), [&](const auto &a) {
-        return std::any_of(rhs.set.cbegin(), rhs.set.cend(), [&](const auto &b) { return *a == *b; });
-    });
+bool operator==(const operation_set &lhs, const operation_set &rhs) {
+    return lhs.prioritized == rhs.prioritized && lhs.set.size() == rhs.set.size() &&
+           std::all_of(lhs.set.cbegin(), lhs.set.cend(), [&](const auto &a) {
+               return std::any_of(rhs.set.cbegin(), rhs.set.cend(), [&](const auto &b) { return a == b; });
+           });
 }
 
-bool operator==(const oprn &lhs, const oprn &rhs) {
+bool operator==(const operation &lhs, const operation &rhs) {
     return lhs.com == rhs.com && lhs.cnt == rhs.cnt && *lhs.operand == *rhs.operand;
 }
 
@@ -131,11 +119,11 @@ void solve(const std::vector<expr> &exprs) {
                                {[](double x, double y) { return y / x; }, '/', 1, true}};
 
     if (exprs.size() == 1) {
-        auto &exp = exprs.front();
-        if (std::fabs(exp.value - X) < 0.01 &&
-            std::none_of(ids.cbegin(), ids.cend(), [&](const auto &id) { return *id == *exp.id; })) {
-            ids.push_front(exp.id);
-            std::cout << exp << '=' << X << std::endl;
+        auto &expr = exprs.front();
+        if (std::fabs(expr.value - X) < 0.01 &&
+            std::none_of(ids.cbegin(), ids.cend(), [&](const auto &id) { return *id == *expr.id; })) {
+            ids.push_front(expr.id);
+            std::cout << expr << '=' << X << std::endl;
         }
         return;
     }
@@ -148,33 +136,30 @@ void solve(const std::vector<expr> &exprs) {
                 else if (!oprs[k].reverse && exprs[y].op && exprs[y].op->priority == oprs[k].priority)
                     continue;
 
-                std::vector<expr> gexprs(exprs.size() - 1);
-                auto &gexpr = gexprs.front();
-                gexpr.lhs = &exprs[x];
-                gexpr.rhs = &exprs[y];
-                gexpr.op = &oprs[k];
-                gexpr.value = oprs[k].fn(exprs[x].value, exprs[y].value);
-                gexpr.id = std::make_shared<id_type>(std::in_place_type<oprn_set>);
+                expr gexpr{&exprs[x], &exprs[y], &oprs[k], oprs[k].fn(exprs[x].value, exprs[y].value),
+                           std::make_shared<id_type>(std::in_place_type<operation_set>)};
 
-                auto &id = std::get<oprn_set>(*gexpr.id);
+                auto &id = std::get<operation_set>(*gexpr.id);
                 auto &lid = (gexpr.op->reverse ? gexpr.rhs : gexpr.lhs)->id;
                 auto &rid = (gexpr.op->reverse ? gexpr.lhs : gexpr.rhs)->id;
                 id.prioritized = gexpr.op->priority > 0;
-
-                if (std::get_if<double>(&*lid) || std::get<oprn_set>(*lid).prioritized != id.prioritized)
-                    id.insert(lid, true);
+                if (std::holds_alternative<double>(*lid) ||
+                    std::get<operation_set>(*lid).prioritized != id.prioritized)
+                    id.insert(operation{lid, true, 1});
                 else
-                    id.update(std::get<oprn_set>(*lid), false);
-
-                if (std::get_if<double>(&*rid) || std::get<oprn_set>(*rid).prioritized != id.prioritized)
-                    id.insert(rid, gexpr.op->ch == '+' || gexpr.op->ch == '*');
+                    id.update(std::get<operation_set>(*lid), false);
+                if (std::holds_alternative<double>(*rid) ||
+                    std::get<operation_set>(*rid).prioritized != id.prioritized)
+                    id.insert(operation{rid, gexpr.op->ch == '+' || gexpr.op->ch == '*', 1});
                 else
-                    id.update(std::get<oprn_set>(*rid), gexpr.op->ch == '-' || gexpr.op->ch == '/');
+                    id.update(std::get<operation_set>(*rid), gexpr.op->ch == '-' || gexpr.op->ch == '/');
 
+                std::vector<expr> gexprs(exprs.size() - 1);
+                gexprs[0] = std::move(gexpr);
                 for (std::size_t z = 0, i = 1; z < exprs.size(); ++z)
                     if (z != x && z != y)
                         gexprs[i++] = exprs[z];
-                solve(gexprs);
+                solve(std::move(gexprs));
             }
         }
     }
@@ -212,7 +197,7 @@ int main(int argc, char *argv[]) {
             exp.op = nullptr;
             exp.id = std::make_shared<id_type>(std::in_place_type<double>, exp.value);
         }
-        solve(exprs);
+        solve(std::move(exprs));
         std::cout << '[' << ids.size() << " solution" << (ids.size() < 2 ? "" : "s") << "]\n\n";
         ids.clear();
     }
